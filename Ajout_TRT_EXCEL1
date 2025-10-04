@@ -202,15 +202,51 @@ def fill_input(page, label, value):
     page.locator(f"label:has-text('{label}')").locator("xpath=..").locator("input, textarea").first.fill(str(value))
 
 def safe_fill_input(el, value: str):
-    try: el.scroll_into_view_if_needed()
-    except Exception: pass
+    """
+    Version rapide : évite la frappe caractère par caractère.
+    1) .fill() direct
+    2) fallback JS (value + events)
+    3) insert_text (tout en une fois)
+    """
+    try:
+        el.scroll_into_view_if_needed()
+    except Exception:
+        pass
+    val = str(value)
+    # 1) Fill natif
+    try:
+        el.fill(val)
+        try: el.page.keyboard.press("Tab")
+        except Exception: pass
+        el.page.wait_for_timeout(40)
+        return True
+    except Exception:
+        pass
+    # 2) JS set + events
+    try:
+        handle = el.element_handle(timeout=800)
+        if handle:
+            handle.evaluate(
+                """(e, v) => {
+                    if ('value' in e) { e.value = v; } else { e.textContent = v; }
+                    e.dispatchEvent(new Event('input',  {bubbles:true}));
+                    e.dispatchEvent(new Event('change', {bubbles:true}));
+                }""",
+                val,
+            )
+            el.page.wait_for_timeout(30)
+            return True
+    except Exception:
+        pass
+    # 3) insert_text (string entière)
     try:
         el.click(force=True)
         el.page.keyboard.press("Control+A")
         el.page.keyboard.press("Delete")
-        el.type(str(value), delay=25)
-        el.page.keyboard.press("Tab")
-        el.page.wait_for_timeout(80)
+        el.page.keyboard.insert_text(val)
+        try: el.page.keyboard.press("Tab")
+        except Exception: pass
+        el.page.wait_for_timeout(40)
         return True
     except Exception:
         return False
@@ -271,20 +307,12 @@ def save_modal(page, modal, label="modal"):
             page.wait_for_timeout(200)
     return False
 
-# ================== 🔧 CLICK_AJOUTER — version rapide (même signature/usage) ==================
+# ================== 🔧 CLICK_AJOUTER — version rapide ==================
 def click_ajouter(page, contexte=""):
-    """
-    Clique sur le bouton 'Ajouter' le plus pertinent sans bloquer 60s.
-    - On privilégie le panel actif.
-    - On filtre les boutons visibles.
-    - On tente un click JS direct (pas d'attente d'actionability).
-    - Sinon .click(force=True, timeout=1000).
-    """
     patterns = [re.compile(r"^\s*\+?\s*Ajouter\s*$", re.I)]
     scopes = []
     panel = get_active_panel(page)
     if panel and panel.count():
-        # petit conteneur probable (toolbar/carte) en priorité
         cont = panel.locator("xpath=.//*[contains(@class,'v-toolbar') or contains(@class,'v-card') or contains(@class,'v-sheet')][1]")
         if cont.count():
             scopes.append(cont.first)
@@ -297,14 +325,13 @@ def click_ajouter(page, contexte=""):
             total = btns.count()
             if total == 0:
                 continue
-            tries = min(total, 4)  # on essaie les 4 premiers max
+            tries = min(total, 4)
             for i in range(tries):
                 btn = btns.nth(i)
                 try:
                     btn.scroll_into_view_if_needed()
                 except Exception:
                     pass
-                # 1) click JS direct
                 try:
                     handle = btn.element_handle(timeout=800)
                     if handle:
@@ -313,7 +340,6 @@ def click_ajouter(page, contexte=""):
                         return True
                 except Exception:
                     pass
-                # 2) fallback: click Playwright court
                 try:
                     btn.click(force=True, timeout=1000)
                     page.wait_for_timeout(120)
@@ -321,7 +347,6 @@ def click_ajouter(page, contexte=""):
                 except Exception:
                     continue
 
-    # Dernier recours global rapide
     try:
         page.get_by_role("button", name=re.compile(r"^\s*\+?\s*Ajouter\s*$", re.I)).first.click(force=True, timeout=1200)
         page.wait_for_timeout(120)
@@ -338,7 +363,7 @@ def select_dropdown_in(root, label, value):
 def fill_in(root, label, value):
     root.locator(f"label:has-text('{label}')").locator("xpath=..").locator("textarea, input").first.fill(str(value))
 
-# =============== Helper chrono pour logs (ne change pas la logique) ===============
+# =============== Helper chrono pour logs ===============
 class StepTimer:
     def __init__(self, prefix: str):
         self.prefix = prefix
@@ -423,7 +448,6 @@ def remplir_categories_donnees(page, categories):
     _open_cat_donnees_tab(page)
     for d in categories:
         ajouter_categorie_donnees(page, d)
-    # facultatif : sauvegarde globale de la section
     try:
         save_current_section(page, label="Catégories de données")
     except Exception:
@@ -648,22 +672,79 @@ def ajouter_taches_initiales(page, taches: List[Dict[str,str]]):
     menu.scroll_into_view_if_needed(); menu.click(force=True)
     page.wait_for_load_state("networkidle"); page.wait_for_timeout(180)
     print("… onglet ouvert")
+
     for idx, t in enumerate(taches, start=1):
         print(f"--- Tâche {idx}/{len(taches)} ---")
         timer = StepTimer(f"Tâches initiales {idx}/{len(taches)}")
 
+        # Ouvrir le modal
         click_ajouter(page, "Tâche initiale"); timer.step("clic '+ Ajouter'")
-        modal = get_modal(page);              timer.step("modal détecté")
+        modal = get_modal(page)
+        modal.wait_for(state="visible", timeout=8000)  # s'assurer qu'il est visible
+        timer.step("modal détecté")
 
-        fields = modal.locator("input, textarea").filter(has_not=modal.locator('[aria-hidden="true"]'))
-        fields.nth(0).fill(t.get("fr",""));  timer.step("champ FR rempli")
-        fields.nth(1).fill(t.get("ar", t.get("fr",""))); timer.step("champ AR rempli")
+        # Attendre des champs éditables (input / textarea / contenteditable)
+        # NB: certains dialogues utilisent des éditeurs riches contenteditable
+        try:
+            modal.wait_for_selector("input, textarea, [contenteditable='true']",
+                                    state="visible", timeout=8000)
+        except Exception:
+            # petit délai en secours si l'animation n'est pas terminée
+            page.wait_for_timeout(250)
 
+        # Sélectionner uniquement les champs visibles / non masqués
+        fields = modal.locator(
+            "textarea:visible, input:visible, [contenteditable='true']:visible"
+        ).filter(
+            has_not=modal.locator('[aria-hidden="true"]')
+        )
+
+        # S’assurer qu’on a au moins un champ
+        n = fields.count()
+        if n == 0:
+            # dernier recours: réessayer après un court délai
+            page.wait_for_timeout(300)
+            n = fields.count()
+            if n == 0:
+                print("⚠️ Tâches initiales > aucun champ visible détecté dans le modal — on saute cette tâche.")
+                # fermer proprement si possible pour éviter de rester bloqué
+                try:
+                    save_modal(page, modal, label="Tâche initiale (aucun champ)")
+                except Exception:
+                    try: page.keyboard.press("Escape")
+                    except Exception: pass
+                continue
+
+        # Déterminer les 2 premiers champs (FR puis AR). S’il n’y en a qu’un, on met FR seulement.
+        fr_el = fields.nth(0)
+        ar_el = fields.nth(1) if n > 1 else None
+
+        # Valeurs
+        fr_val = t.get("fr", "")
+        ar_val = t.get("ar", fr_val)
+
+        # Remplir (sans frappe char-par-char)
+        ok_fr = safe_fill_input(fr_el, fr_val)
+        timer.step("champ FR rempli" if ok_fr else "champ FR: fallback")
+
+        if ar_el is not None:
+            ok_ar = safe_fill_input(ar_el, ar_val)
+            timer.step("champ AR rempli" if ok_ar else "champ AR: fallback")
+        else:
+            timer.step("champ AR absent (non requis)")
+
+        # Sauvegarde du modal
         timer.step("prêt à cliquer 'Enregistrer' (modal)")
-        save_modal(page, modal, label="Tâche initiale"); timer.step("clic 'Enregistrer' (modal) & fermeture")
-        page.wait_for_timeout(150);           timer.step("pause post-enregistrement")
+        save_modal(page, modal, label="Tâche initiale")
+        timer.step("clic 'Enregistrer' (modal) & fermeture")
+
+        # petite pause (stabilité UI)
+        page.wait_for_timeout(150)
+        timer.step("pause post-enregistrement")
+
     save_current_section(page, label="Tâches initiales")
     print("💾 Tâches initiales: section enregistrée")
+
 
 # ================== SCRIPT PRINCIPAL ==================
 with sync_playwright() as p:

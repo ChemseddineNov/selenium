@@ -1,7 +1,6 @@
 from playwright.sync_api import sync_playwright
 import pandas as pd
 import re
-import time
 from typing import Dict, Any, List
 import tkinter as tk
 from tkinter import filedialog
@@ -263,6 +262,7 @@ def _scope(panel_or_none, page, selector: str):
     return page.locator(selector)
 
 def save_current_section(page, panel=None, label="section"):
+    print(f"💾 Tentative d'enregistrement de la section: {label}")
     for _ in range(2):
         try: page.keyboard.press("Escape")
         except Exception: pass
@@ -277,15 +277,18 @@ def save_current_section(page, panel=None, label="section"):
             btn.click(force=True)
             page.wait_for_load_state("networkidle")
             page.wait_for_timeout(200)
+            print(f"✅ Section enregistrée: {label}")
             return True
         except Exception:
             page.wait_for_timeout(180)
+    print(f"⚠️ Échec d'enregistrement (section): {label}")
     return False
 
 def get_modal(page):
     return page.locator("[role='dialog']:has(button:has-text('Enregistrer')):visible, div.v-overlay-container:has(button:has-text('Enregistrer')):visible").last
 
 def save_modal(page, modal, label="modal"):
+    print(f"💾 Tentative d'enregistrement (modal): {label}")
     for _ in range(3):
         try:
             btn = modal.get_by_role("button", name=re.compile(r"^\s*Enregistrer\s*$", re.I)).last
@@ -295,16 +298,18 @@ def save_modal(page, modal, label="modal"):
             try:
                 btn.wait_for(state="detached", timeout=1500)
             except Exception:
-                page.wait_for_selector(
+                modal.page.wait_for_selector(
                     "[role='dialog']:has(button:has-text('Enregistrer')), div.v-overlay-container:has(button:has-text('Enregistrer'))",
                     state="hidden",
                     timeout=3000
                 )
+            print(f"✅ Enregistré (modal): {label}")
             return True
         except Exception:
-            try: page.keyboard.press("Escape")
+            try: modal.page.keyboard.press("Escape")
             except: pass
-            page.wait_for_timeout(200)
+            modal.page.wait_for_timeout(200)
+    print(f"⚠️ Échec 'Enregistrer' (modal): {label}")
     return False
 
 # ================== 🔧 CLICK_AJOUTER — version rapide ==================
@@ -363,24 +368,15 @@ def select_dropdown_in(root, label, value):
 def fill_in(root, label, value):
     root.locator(f"label:has-text('{label}')").locator("xpath=..").locator("textarea, input").first.fill(str(value))
 
-# =============== Helper chrono pour logs ===============
-class StepTimer:
-    def __init__(self, prefix: str):
-        self.prefix = prefix
-        self.t0 = time.perf_counter()
-        self.last = self.t0
-    def step(self, msg: str):
-        now = time.perf_counter()
-        print(f"⏱ {self.prefix} > {msg} (+{now - self.last:.2f}s)")
-        self.last = now
-
 # ================== CATÉGORIES (personnes) ==================
 def remplir_categories_personnes(page, categories):
+    print(f"➡️ Catégories de personnes: {len(categories)} élément(s) à ajouter")
     menu_item = page.locator("text=Catégories de données à caractère personnel")
     menu_item.scroll_into_view_if_needed(); menu_item.click(force=True)
     page.wait_for_timeout(300)
 
     for r in categories:
+        print(f"  • Ajout catégorie: {r.get('categorie','')}, type_collecte={r.get('type_collecte','')}, mode_collecte={r.get('mode_collecte','')}")
         click_ajouter(page, "Catégorie de personnes")
         modal = get_modal(page)
         select_dropdown_in(modal, "Catégorie des personnes concernées", r["categorie"])
@@ -422,6 +418,7 @@ def _click_plus_ajouter_et_ouvrir_modal(page):
     return modal
 
 def ajouter_categorie_donnees(page, donnee):
+    print(f"  • Ajout catégorie données: idx={donnee.get('categorie_index')}, type={donnee.get('type')}, origine={donnee.get('origine')}, utilise={donnee.get('utilise')}, source={donnee.get('source')}, durée_type={donnee.get('duree_type')}, durée={donnee.get('duree')}, déclencheur={donnee.get('declencheur')}")
     modal = _click_plus_ajouter_et_ouvrir_modal(page)
 
     # Catégorie (par index)
@@ -445,6 +442,7 @@ def ajouter_categorie_donnees(page, donnee):
     page.wait_for_timeout(150)
 
 def remplir_categories_donnees(page, categories):
+    print(f"➡️ Catégories de données: {len(categories)} élément(s) à ajouter")
     _open_cat_donnees_tab(page)
     for d in categories:
         ajouter_categorie_donnees(page, d)
@@ -455,6 +453,7 @@ def remplir_categories_donnees(page, categories):
 
 # ================== FINALITÉ ==================
 def remplir_finalite(page, finalite_fr, finalite_ar):
+    print("➡️ Finalité: remplissage FR/AR")
     menu_item = page.get_by_text("Finalité", exact=True)
     menu_item.scroll_into_view_if_needed(); menu_item.click(force=True)
     page.wait_for_timeout(250)
@@ -465,35 +464,38 @@ def remplir_finalite(page, finalite_fr, finalite_ar):
 # ================== SOUS-TRAITEMENTS (modal) ==================
 def ajouter_sous_traitement(page, st):
     print(f"➡️ Sous-traitements: ajout «{st.get('denomination_fr','').strip() or 'N/A'}»")
-    timer = StepTimer("Sous-traitements")
+    print(f"   Détails: types={st.get('types')}, base_legale={st.get('base_legale')}, sous_traitant={st.get('sous_traitant')}, logiciel={st.get('logiciel')}, note={'<vide>' if not st.get('note') else '<fourni>'}")
 
-    click_ajouter(page, "Sous-traitement"); timer.step("clic '+ Ajouter'")
-    modal = get_modal(page);                timer.step("modal détecté")
+    print("   - clic '+ Ajouter'")
+    click_ajouter(page, "Sous-traitement")
+    modal = get_modal(page); print("   - modal ouvert")
 
-    modal.locator("input").nth(0).fill(st["denomination_fr"]); timer.step("champ 'Dénomination FR' rempli")
-    modal.locator("input").nth(1).fill(st["denomination_ar"]); timer.step("champ 'Dénomination AR' rempli")
+    modal.locator("input").nth(0).fill(st["denomination_fr"]); print("   - Dénomination FR ok")
+    modal.locator("input").nth(1).fill(st["denomination_ar"]); print("   - Dénomination AR ok")
 
     type_input = modal.locator("label:has-text('Type de traitement') + div input").first
-    type_input.click();                     timer.step("ouverture liste 'Type de traitement'")
-    page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible"); timer.step("liste des types visible")
+    type_input.click(); print("   - ouverture liste 'Type de traitement'")
+    page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible"); print("   - liste types visible")
     for t in st["types"]:
         page.locator("div.v-overlay-container .v-list-item-title", has_text=t).first.click()
-        timer.step(f"type sélectionné: {t}")
-    page.keyboard.press("Escape");          timer.step("fermeture liste types (Esc)")
+        print(f"   - type sélectionné: {t}")
+    page.keyboard.press("Escape"); print("   - fermeture liste types")
 
-    select_dropdown_in(modal, "Base légale", st["base_legale"]); timer.step("sélection 'Base légale'")
+    select_dropdown_in(modal, "Base légale", st["base_legale"]); print("   - Base légale ok")
     if st.get("sous_traitant"):
-        select_dropdown_in(modal, "Sous traitant", st["sous_traitant"]); timer.step("sélection 'Sous traitant'")
+        select_dropdown_in(modal, "Sous traitant", st["sous_traitant"]); print("   - Sous traitant ok")
     if st.get("logiciel"):
-        select_dropdown_in(modal, "Logiciel utilisé", st["logiciel"]);   timer.step("sélection 'Logiciel utilisé'")
-    modal.locator("textarea").last.fill(st["note"]);                       timer.step("champ 'Note' rempli")
+        select_dropdown_in(modal, "Logiciel utilisé", st["logiciel"]); print("   - Logiciel utilisé ok")
+    modal.locator("textarea").last.fill(st["note"]); print("   - Note ok")
 
-    timer.step("prêt à cliquer 'Enregistrer' (modal)")
-    save_modal(page, modal, label="Sous-traitement"); timer.step("clic 'Enregistrer' (modal) & fermeture")
-    page.wait_for_timeout(250);                                timer.step("pause post-enregistrement")
+    print("   - enregistrement (modal)")
+    save_modal(page, modal, label="Sous-traitement")
+    page.wait_for_timeout(250)
+    print("   - enregistré")
 
 # ================== CONSERVATION DES DONNÉES (page) ==================
 def ajouter_conservation_donnees(page, conservation):
+    print(f"➡️ Conservation des données: modes={conservation.get('modes')}, info={conservation.get('informatique')}, manuel={conservation.get('manuel')}")
     onglet = page.get_by_text("Conservation des données", exact=True)
     onglet.scroll_into_view_if_needed(); onglet.click(force=True)
     page.wait_for_load_state("networkidle"); page.wait_for_timeout(200)
@@ -512,15 +514,15 @@ def ajouter_conservation_donnees(page, conservation):
             if not cb.is_checked(): cb.check(force=True)
         except Exception: cb.click(force=True)
 
-    if "Manuel" in conservation["modes"]: ensure_checked("Manuel")
-    if "Informatique" in conservation["modes"]: ensure_checked("Informatique")
+    if "Manuel" in conservation["modes"]: ensure_checked("Manuel"); print("   - case 'Manuel' cochée")
+    if "Informatique" in conservation["modes"]: ensure_checked("Informatique"); print("   - case 'Informatique' cochée")
 
     if conservation.get("informatique"):
-        fill_by_label("Nom de la base de données", conservation["informatique"]["nom"])
-        fill_by_label("Lieu de stockage de la base de données", conservation["informatique"]["lieu"])
+        fill_by_label("Nom de la base de données", conservation["informatique"]["nom"]);  print("   - nom base de données ok")
+        fill_by_label("Lieu de stockage de la base de données", conservation["informatique"]["lieu"]); print("   - lieu base de données ok")
     if conservation.get("manuel"):
-        fill_by_label("Nom du fichier manuel", conservation["manuel"]["nom"])
-        fill_by_label("Lieu de stockage du fichier", conservation["manuel"]["lieu"])
+        fill_by_label("Nom du fichier manuel", conservation["manuel"]["nom"]); print("   - nom fichier manuel ok")
+        fill_by_label("Lieu de stockage du fichier", conservation["manuel"]["lieu"]); print("   - lieu fichier manuel ok")
 
     save_current_section(page, label="Conservation des données")
 
@@ -536,26 +538,28 @@ def modal_fill(modal, label, value):
 
 def ajouter_un_destinataire(page, d):
     print(f"➡️ Destinataires: ajout «{d.get('destinataire','').strip() or 'N/A'}»")
-    timer = StepTimer("Destinataires")
+    print(f"   Détails: moyen={d.get('moyen')}, cadre_legal={d.get('cadre_legal')}, objectifs={'<vide>' if not d.get('objectifs') else '<fourni>'}, observation={'<vide>' if not d.get('observation') else '<fourni>'}")
 
-    click_ajouter(page, "Destinataire"); timer.step("clic '+ Ajouter'")
-    modal = get_modal(page);            timer.step("modal détecté")
+    print("   - clic '+ Ajouter'")
+    click_ajouter(page, "Destinataire")
+    modal = get_modal(page); print("   - modal ouvert")
 
     dest_input = modal.locator("label:has-text('Destinataire') + div input").first
-    dest_input.click();                 timer.step("focus champ 'Destinataire'")
+    dest_input.click();                 print("   - focus 'Destinataire'")
     if d.get("destinataire"):
-        dest_input.fill(d["destinataire"]); modal.page.wait_for_timeout(150); timer.step("saisie filtre 'Destinataire'")
-    modal.page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible"); timer.step("liste des destinataires visible")
-    modal.page.locator("div.v-overlay-container .v-list-item-title", has_text=d["destinataire"]).first.click(); timer.step("option 'Destinataire' sélectionnée")
+        dest_input.fill(d["destinataire"]); modal.page.wait_for_timeout(150); print("   - filtre saisi")
+    modal.page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible"); print("   - liste visible")
+    modal.page.locator("div.v-overlay-container .v-list-item-title", has_text=d["destinataire"]).first.click(); print("   - destinataire sélectionné")
 
-    if d.get("moyen"):        modal_select_dropdown(modal, "Moyen de communication", d["moyen"]);                timer.step("sélection 'Moyen de communication'")
-    if d.get("cadre_legal") is not None: modal_select_dropdown(modal, "Cadre legal", "Oui" if d["cadre_legal"] else "Non"); timer.step("sélection 'Cadre legal'")
-    if d.get("objectifs"):   modal_fill(modal, "Objectifs", d["objectifs"]);                                    timer.step("champ 'Objectifs' rempli")
-    if d.get("observation"): modal_fill(modal, "Observation", d["observation"]);                                timer.step("champ 'Observation' rempli")
+    if d.get("moyen"):        modal_select_dropdown(modal, "Moyen de communication", d["moyen"]);                print("   - moyen ok")
+    if d.get("cadre_legal") is not None: modal_select_dropdown(modal, "Cadre legal", "Oui" if d["cadre_legal"] else "Non"); print("   - cadre légal ok")
+    if d.get("objectifs"):   modal_fill(modal, "Objectifs", d["objectifs"]);                                    print("   - objectifs ok")
+    if d.get("observation"): modal_fill(modal, "Observation", d["observation"]);                                print("   - observation ok")
 
-    timer.step("prêt à cliquer 'Enregistrer' (modal)")
-    save_modal(page, modal, label="Destinataire"); timer.step("clic 'Enregistrer' (modal) & fermeture")
-    modal.page.wait_for_timeout(150);                                        timer.step("pause post-enregistrement")
+    print("   - enregistrement (modal)")
+    save_modal(page, modal, label="Destinataire")
+    modal.page.wait_for_timeout(150)
+    print("   - enregistré")
 
 def ajouter_destinataires(page, items):
     print(f"➡️ Destinataires: {len(items)} élément(s) à ajouter")
@@ -570,6 +574,7 @@ def ajouter_destinataires(page, items):
 
 # ================== CONSENTEMENT (page) ==================
 def ajouter_consentement(page, consent):
+    print(f"➡️ Consentement: existe={consent.get('existe')}, méthode FR/AR")
     onglet = page.get_by_text("Consentement", exact=True)
     onglet.scroll_into_view_if_needed(); onglet.click(force=True)
     page.wait_for_timeout(200)
@@ -623,11 +628,13 @@ def click_onglet_vuetify(page, titre: str, expect_prefix: str | None = None):
     page.get_by_text(titre.replace("’","'"), exact=False).first.click(); page.wait_for_timeout(180)
 
 def remplir_droits_personnes(page, dp):
+    print("➡️ Droit des personnes: remplissage des onglets disponibles")
     menu = page.get_by_text("Droit des personnes", exact=False)
     menu.scroll_into_view_if_needed(); menu.click(force=True)
     page.wait_for_load_state("networkidle"); page.wait_for_timeout(200)
 
     if dp.get("information"):
+        print("  • Onglet: Droit à l'information")
         click_onglet_vuetify(page, "Droit à l'information", expect_prefix="information_right")
         panel = get_active_panel(page)
         info = dp["information"]; svc = info.get("service", {})
@@ -645,6 +652,7 @@ def remplir_droits_personnes(page, dp):
         save_current_section(page, panel, label="Droit à l'information")
 
     def traiter_autre_onglet(titre, pref, data):
+        print(f"  • Onglet: {titre}")
         click_onglet_vuetify(page, titre, expect_prefix=pref)
         panel = get_active_panel(page)
         svc = data.get("service", {})
@@ -666,6 +674,8 @@ def remplir_droits_personnes(page, dp):
     if dp.get("opposition"):    traiter_autre_onglet("Droit d'opposition", "opposition_right", dp["opposition"])
 
 # ================== TÂCHES INITIALES (modal) ==================
+# ================== TÂCHES INITIALES (modal) ==================
+# ================== TÂCHES INITIALES (modal) ==================
 def ajouter_taches_initiales(page, taches: List[Dict[str,str]]):
     print(f"➡️ Tâches initiales: {len(taches)} tâche(s) à ajouter")
     menu = page.get_by_text("Tâches initiales", exact=False)
@@ -675,72 +685,85 @@ def ajouter_taches_initiales(page, taches: List[Dict[str,str]]):
 
     for idx, t in enumerate(taches, start=1):
         print(f"--- Tâche {idx}/{len(taches)} ---")
-        timer = StepTimer(f"Tâches initiales {idx}/{len(taches)}")
+        fr_val = t.get("fr", "")
+        ar_val = t.get("ar", fr_val)
+        print(f'   Détails: FR="{fr_val}", AR={"<fourni>" if "ar" in t and t["ar"] else "<copie FR>"}')
 
-        # Ouvrir le modal
-        click_ajouter(page, "Tâche initiale"); timer.step("clic '+ Ajouter'")
-        modal = get_modal(page)
-        modal.wait_for(state="visible", timeout=8000)  # s'assurer qu'il est visible
-        timer.step("modal détecté")
+        # 1) Ouvrir le modal
+        print("   - clic '+ Ajouter'")
+        click_ajouter(page, "Tâche initiale")
 
-        # Attendre des champs éditables (input / textarea / contenteditable)
-        # NB: certains dialogues utilisent des éditeurs riches contenteditable
+        # 2) Détection robuste du modal (quelques tentatives)
+        modal = None
+        detected = False
+        for attempt in range(1, 6):  # jusqu'à 5 tentatives
+            modal = get_modal(page)
+            if modal and modal.count():
+                try:
+                    modal.wait_for(state="visible", timeout=2000)
+                    print(f"   - modal détecté (tentative {attempt})")
+                    detected = True
+                    break
+                except Exception:
+                    pass
+            else:
+                # parfois l'overlay se monte après une animation
+                page.wait_for_timeout(250)
+
+            # on retente un clic si nécessaire
+            if attempt < 5:
+                print("   - modal non visible, nouvel essai d’ouverture…")
+                click_ajouter(page, "Tâche initiale")
+
+        if not detected:
+            print("   ❌ Impossible d’ouvrir le modal des tâches. On passe à la tâche suivante.")
+            # petit échappatoire si un overlay invisible traîne
+            try: page.keyboard.press("Escape")
+            except Exception: pass
+            continue
+
+        # 3) Attendre des champs éditables (input / textarea / contenteditable)
+        print("   - recherche des champs éditables visibles")
         try:
             modal.wait_for_selector("input, textarea, [contenteditable='true']",
                                     state="visible", timeout=8000)
         except Exception:
-            # petit délai en secours si l'animation n'est pas terminée
-            page.wait_for_timeout(250)
+            page.wait_for_timeout(300)
 
-        # Sélectionner uniquement les champs visibles / non masqués
+        # 4) Sélection des champs visibles / non masqués
         fields = modal.locator(
             "textarea:visible, input:visible, [contenteditable='true']:visible"
         ).filter(
             has_not=modal.locator('[aria-hidden="true"]')
         )
-
-        # S’assurer qu’on a au moins un champ
         n = fields.count()
         if n == 0:
-            # dernier recours: réessayer après un court délai
-            page.wait_for_timeout(300)
-            n = fields.count()
-            if n == 0:
-                print("⚠️ Tâches initiales > aucun champ visible détecté dans le modal — on saute cette tâche.")
-                # fermer proprement si possible pour éviter de rester bloqué
-                try:
-                    save_modal(page, modal, label="Tâche initiale (aucun champ)")
-                except Exception:
-                    try: page.keyboard.press("Escape")
-                    except Exception: pass
-                continue
+            print("   ⚠️ Aucun champ visible détecté dans le modal — on saute cette tâche.")
+            try:
+                save_modal(page, modal, label="Tâche initiale (aucun champ)")
+            except Exception:
+                try: page.keyboard.press("Escape")
+                except Exception: pass
+            continue
 
-        # Déterminer les 2 premiers champs (FR puis AR). S’il n’y en a qu’un, on met FR seulement.
+        # 5) FR puis AR (si présent)
         fr_el = fields.nth(0)
         ar_el = fields.nth(1) if n > 1 else None
 
-        # Valeurs
-        fr_val = t.get("fr", "")
-        ar_val = t.get("ar", fr_val)
-
-        # Remplir (sans frappe char-par-char)
-        ok_fr = safe_fill_input(fr_el, fr_val)
-        timer.step("champ FR rempli" if ok_fr else "champ FR: fallback")
+        print("   - remplissage FR")
+        safe_fill_input(fr_el, fr_val)
 
         if ar_el is not None:
-            ok_ar = safe_fill_input(ar_el, ar_val)
-            timer.step("champ AR rempli" if ok_ar else "champ AR: fallback")
+            print("   - remplissage AR")
+            safe_fill_input(ar_el, ar_val)
         else:
-            timer.step("champ AR absent (non requis)")
+            print("   - champ AR absent (non requis)")
 
-        # Sauvegarde du modal
-        timer.step("prêt à cliquer 'Enregistrer' (modal)")
+        # 6) Sauvegarde du modal
+        print("   - clic 'Enregistrer' (modal)")
         save_modal(page, modal, label="Tâche initiale")
-        timer.step("clic 'Enregistrer' (modal) & fermeture")
-
-        # petite pause (stabilité UI)
         page.wait_for_timeout(150)
-        timer.step("pause post-enregistrement")
+        print("   - tâche enregistrée")
 
     save_current_section(page, label="Tâches initiales")
     print("💾 Tâches initiales: section enregistrée")
@@ -762,6 +785,7 @@ with sync_playwright() as p:
     print("✅ Connexion réussie")
 
     # --- Création traitement ---
+    print("➡️ Création du traitement")
     page.goto("https://admin.dp-manager.com/registers/trt-registers/create")
     page.wait_for_url("**/registers/trt-registers/create", timeout=20000)
     page.fill("#code", cfg["traitement"]["code"])
@@ -776,8 +800,10 @@ with sync_playwright() as p:
     page.click("body")
     page.wait_for_selector("button[type='submit']:not([disabled])", timeout=5000)
     page.locator("button[type='submit']").click()
+    print("✅ Traitement créé")
 
     # --- Fondement légal ---
+    print("➡️ Fondement légal")
     try:
         page.click("text=Fondement légal d'un traitement", timeout=4000)
     except Exception:
