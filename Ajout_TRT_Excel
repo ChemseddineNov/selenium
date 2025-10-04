@@ -1,0 +1,722 @@
+from playwright.sync_api import sync_playwright
+import pandas as pd
+import re
+from typing import Dict, Any, List
+import tkinter as tk
+from tkinter import filedialog
+
+# ================== FILE PICKER ==================
+root = tk.Tk(); root.withdraw()
+EXCEL_PATH = filedialog.askopenfilename(
+    title="Sélectionnez le fichier Excel",
+    filetypes=[("Fichiers Excel", "*.xlsx *.xls")]
+)
+if not EXCEL_PATH:
+    raise Exception("❌ Aucun fichier sélectionné, arrêt du script.")
+print(f"✅ Fichier Excel sélectionné : {EXCEL_PATH}")
+
+# ================== LECTURE EXCEL ==================
+def _to_bool(x) -> bool:
+    if isinstance(x, bool): return x
+    if x is None: return False
+    s = str(x).strip().lower()
+    return s in ("1", "true", "vrai", "oui", "yes", "y")
+
+def _clean_phone(s: str) -> str:
+    if not s: return ""
+    return re.sub(r"\s+", "", str(s))
+
+def load_config(path: str) -> Dict[str, Any]:
+    sheets = pd.read_excel(path, sheet_name=None, dtype=str)
+
+    tr = sheets.get("traitement", pd.DataFrame()).fillna("")
+    tr_row = tr.iloc[0].to_dict() if not tr.empty else {}
+    traitement = {
+        "code": tr_row.get("code", "TRT-TEST"),
+        "name_fr": tr_row.get("name_fr", "Test Ressources Humaines"),
+        "name_ar": tr_row.get("name_ar", "تجربة الموارد البشرية"),
+        "status": tr_row.get("status", "En cours"),
+        "type_manuel": _to_bool(tr_row.get("type_manuel", True)),
+        "type_automatique": _to_bool(tr_row.get("type_automatique", True)),
+    }
+
+    fd = sheets.get("fondement_legal", pd.DataFrame()).fillna("")
+    fd_row = fd.iloc[0].to_dict() if not fd.empty else {}
+    fondement = {
+        "texte_fr": fd_row.get("texte_fr", ""),
+        "texte_ar": fd_row.get("texte_ar", ""),
+        "base_consentement": _to_bool(fd_row.get("base_consentement", False)),
+        "base_obligation": _to_bool(fd_row.get("base_obligation", False)),
+        "base_vie": _to_bool(fd_row.get("base_vie", False)),
+        "base_vitaux": _to_bool(fd_row.get("base_vitaux", False)),
+        "base_contrat": _to_bool(fd_row.get("base_contrat", False)),
+        "base_public": _to_bool(fd_row.get("base_public", False)),
+        "base_interet_legitime": _to_bool(fd_row.get("base_interet_legitime", False)),
+        "note": fd_row.get("note", ""),
+    }
+
+    cp_df = sheets.get("categories_personnes", pd.DataFrame()).fillna("")
+    categories_personnes = []
+    for _, r in cp_df.iterrows():
+        categories_personnes.append({
+            "categorie": r.get("categorie", ""),
+            "type_collecte": r.get("type_collecte", ""),
+            "mode_collecte": r.get("mode_collecte", ""),
+            "securites": {
+                "Traçabilité": _to_bool(r.get("tracabilite", False)),
+                "Signature électronique": _to_bool(r.get("signature_elec", False)),
+                "Chiffrement": _to_bool(r.get("chiffrement", False)),
+                "Charte de sécurité": _to_bool(r.get("charte_securite", False)),
+            }
+        })
+
+    cd_df = sheets.get("categories_donnees", pd.DataFrame()).fillna("")
+    categories_donnees = []
+    for _, r in cd_df.iterrows():
+        categories_donnees.append({
+            "categorie_index": int(r.get("categorie_index", 0)),
+            "type": r.get("type", ""),
+            "origine": r.get("origine", ""),
+            "utilise": r.get("utilise", ""),
+            "source": r.get("source", ""),
+            "duree_type": r.get("duree_type", "Limitée"),
+            "duree": int(r.get("duree", 0)) if str(r.get("duree", "")).strip().isdigit() else 0,
+            "declencheur": r.get("declencheur", ""),
+        })
+
+    fin_df = sheets.get("finalite", pd.DataFrame()).fillna("")
+    fin_row = fin_df.iloc[0].to_dict() if not fin_df.empty else {}
+    finalite = {"fr": fin_row.get("finalite_fr", ""), "ar": fin_row.get("finalite_ar", "")}
+
+    # --- sous_traitements ---
+    st_df = sheets.get("sous_traitements", pd.DataFrame()).fillna("")
+    sous_traitements = []
+    for _, r in st_df.iterrows():
+        raw_types = str(r.get("types", "")).strip()
+        types = [raw_types] if raw_types and "," not in raw_types else [
+            x.strip() for x in raw_types.split(",") if x.strip()
+        ]
+        sous_traitements.append({
+            "denomination_fr": r.get("denomination_fr", ""),
+            "denomination_ar": r.get("denomination_ar", ""),
+            "types": types,
+            "base_legale": r.get("base_legale", ""),
+            "sous_traitant": r.get("sous_traitant", ""),
+            "logiciel": r.get("logiciel", ""),
+            "note": r.get("note", "")
+        })
+
+    cons_df = sheets.get("conservation", pd.DataFrame()).fillna("")
+    cons_row = cons_df.iloc[0].to_dict() if not cons_df.empty else {}
+    modes = []
+    if _to_bool(cons_row.get("manuel", True)): modes.append("Manuel")
+    if _to_bool(cons_row.get("informatique", True)): modes.append("Informatique")
+    conservation = {
+        "modes": modes,
+        "manuel": {"nom": cons_row.get("manuel_nom", ""), "lieu": cons_row.get("manuel_lieu", "")},
+        "informatique": {"nom": cons_row.get("info_nom", ""), "lieu": cons_row.get("info_lieu", "")}
+    }
+
+    dest_df = sheets.get("destinataires", pd.DataFrame()).fillna("")
+    destinataires = []
+    for _, r in dest_df.iterrows():
+        destinataires.append({
+            "destinataire": r.get("destinataire", ""),
+            "moyen": r.get("moyen", ""),
+            "cadre_legal": _to_bool(r.get("cadre_legal", "Oui")),
+            "objectifs": r.get("objectifs", ""),
+            "observation": r.get("observation", "")
+        })
+
+    cons2_df = sheets.get("consentement", pd.DataFrame()).fillna("")
+    cons2_row = cons2_df.iloc[0].to_dict() if not cons2_df.empty else {}
+    consentement = {
+        "existe": _to_bool(cons2_row.get("existe", "Oui")),
+        "methode_fr": cons2_row.get("methode_fr", ""),
+        "methode_ar": cons2_row.get("methode_ar", ""),
+    }
+
+    droits_df = sheets.get("droits", pd.DataFrame()).fillna("")
+    droits_map: Dict[str, Dict[str, Any]] = {}
+    for _, r in droits_df.iterrows():
+        key = str(r.get("droit", "")).strip().lower()
+        if key not in ("information", "acces", "rectification", "opposition"):
+            continue
+        droits_map[key] = {
+            "comment": r.get("comment_fr", ""),
+            "comment_ar": r.get("comment_ar", ""),
+            "mesures": r.get("mesures_fr", ""),
+            "mesures_ar": r.get("mesures_ar", ""),
+            "service": {
+                "nom": r.get("service_nom_fr", ""),
+                "nom_ar": r.get("service_nom_ar", ""),
+                "mobile": _clean_phone(r.get("mobile", "")),
+                "email": r.get("email", ""),
+                "adresse": r.get("adresse_fr", ""),
+                "adresse_ar": r.get("adresse_ar", "")
+            }
+        }
+
+    t_df = sheets.get("taches", pd.DataFrame()).fillna("")
+    taches = [{"fr": r.get("fr", ""), "ar": r.get("ar", r.get("fr", ""))} for _, r in t_df.iterrows()]
+
+    return {
+        "traitement": traitement, "fondement": fondement,
+        "categories_personnes": categories_personnes, "categories_donnees": categories_donnees,
+        "finalite": finalite, "sous_traitements": sous_traitements,
+        "conservation": conservation, "destinataires": destinataires,
+        "consentement": consentement, "droits": droits_map, "taches": taches,
+    }
+
+# ================== HELPERS UI ==================
+def _scope(panel_or_none, page, selector: str):
+    if panel_or_none:
+        nodes = panel_or_none.locator(selector)
+        if nodes.count(): return nodes
+    return page.locator(selector)
+
+def get_active_panel(page):
+    pnl = page.locator('[role="tabpanel"]:visible, .v-window-item--active').first
+    return pnl if pnl.count() else None
+
+def blur_and_clear_overlays(page):
+    # ferme listes / menus susceptibles de masquer "Enregistrer"
+    try: page.keyboard.press("Escape")
+    except Exception: pass
+    page.wait_for_timeout(80)
+    try: page.click("body", position={"x": 5, "y": 5})
+    except Exception: pass
+    page.wait_for_timeout(120)
+
+def select_dropdown(page, label, value, scope=None):
+    if not value: return
+    ctx = scope if scope is not None else page
+    ib = ctx.locator(f"label:has-text('{label}') + div input[placeholder]").first
+    ib.scroll_into_view_if_needed()
+    ib.click()
+    page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible")
+    page.locator("div.v-overlay-container .v-list-item-title", has_text=value).first.click()
+    # ✅ fermer la liste pour éviter de bloquer le bouton Enregistrer
+    try: page.keyboard.press("Escape")
+    except Exception: pass
+    page.wait_for_timeout(120)
+    print(f"✅ {label} sélectionné : {value}")
+
+def fill_input(page, label, value, scope=None):
+    ctx = scope if scope is not None else page
+    el = ctx.locator(f"label:has-text('{label}')").locator("xpath=..").locator("input, textarea").first
+    el.scroll_into_view_if_needed()
+    el.fill(str(value))
+    print(f"✅ {label} rempli : {value}")
+
+def safe_fill_input(el, value: str):
+    try: el.scroll_into_view_if_needed()
+    except Exception: pass
+    try:
+        el.click(force=True)
+        el.page.keyboard.press("Control+A")
+        el.page.keyboard.press("Delete")
+    except Exception: pass
+    try:
+        el.type(str(value), delay=25)
+        el.page.keyboard.press("Tab")
+    except Exception: pass
+    el.page.wait_for_timeout(150)
+
+def save_current_section(page, panel=None, label="section"):
+    # Ferme d’éventuelles listes
+    blur_and_clear_overlays(page)
+
+    for attempt in range(3):
+        try:
+            btns = _scope(panel, page, "button:has-text('Enregistrer')").filter(
+                has_not=page.locator('[aria-hidden="true"]')
+            )
+            if not btns.count():
+                print(f"⚠️ Aucun bouton 'Enregistrer' visible pour {label} (tentative {attempt+1})")
+                page.wait_for_timeout(250)
+                continue
+            btn = btns.last
+            btn.scroll_into_view_if_needed()
+            btn.click(force=True)
+            page.wait_for_timeout(600)
+            print(f"💾 Enregistré ({label})")
+            return True
+        except Exception as e:
+            print(f"⚠️ Tentative {attempt+1} échouée : {e}")
+            page.wait_for_timeout(400)
+    print(f"❌ Impossible d'enregistrer ({label}), on poursuit.")
+    return False
+
+def save_modal_and_wait_close(page, modal, label="modale"):
+    # ferme toute liste qui recouvrirait le bouton
+    blur_and_clear_overlays(page)
+    btn = modal.locator("button:has-text('Enregistrer')").filter(
+        has_not=page.locator('[aria-hidden="true"]')
+    ).last
+    btn.scroll_into_view_if_needed()
+    btn.click(force=True)
+    # attendre la fermeture de la modale
+    try:
+        modal.wait_for(state="detached", timeout=5000)
+    except Exception:
+        pass
+    print(f"💾 Enregistré ({label})")
+
+# ================== BLOCS QUI RESTENT IDENTIQUES ==================
+def ajouter_categorie_donnees(page, donnee):
+    """Détecte modale puis sauvegarde dedans (fallback ancien panel)."""
+    print(f"➡️ Ajout (Catégorie de données) : {donnee['categorie_index']} - {donnee['type']}")
+    _scope(get_active_panel(page), page, "button:has-text('Ajouter')").first.click()
+    page.wait_for_timeout(300)
+
+    modal = page.locator("div.v-overlay-container").last
+    if modal.count() and modal.is_visible():
+        ctx = modal
+        # Catégorie par index
+        ctx.locator("label:has-text('Catégorie des données') + div input").first.click()
+        page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible")
+        page.locator("div.v-overlay-container .v-list-item-title").nth(donnee["categorie_index"]).click()
+        try: page.keyboard.press("Escape")
+        except Exception: pass
+        page.wait_for_timeout(120)
+        print(f"✅ Catégorie sélectionnée (index {donnee['categorie_index']})")
+
+        select_dropdown(page, "Type des données", donnee["type"], scope=ctx)
+        select_dropdown(page, "Origine de la donnée", donnee["origine"], scope=ctx)
+        select_dropdown(page, "Utilisé(s) pour la finalité du traitement", donnee["utilise"], scope=ctx)
+        select_dropdown(page, "Source de données", donnee["source"], scope=ctx)
+
+        if donnee["duree_type"] != "Limitée":
+            select_dropdown(page, "Durée de conservation", donnee["duree_type"], scope=ctx)
+        fill_input(page, "Préciser la durée (mois)", donnee["duree"], scope=ctx)
+        fill_input(page, "Élément déclencheur", donnee["declencheur"], scope=ctx)
+
+        blur_and_clear_overlays(page)
+        save_modal_and_wait_close(page, modal, label="Catégorie de données (modale)")
+    else:
+        # Ancien flux (sans modale)
+        page.locator("label:has-text('Catégorie des données') + div input").click()
+        page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible")
+        page.locator("div.v-overlay-container .v-list-item-title").nth(donnee["categorie_index"]).click()
+        try: page.keyboard.press("Escape")
+        except Exception: pass
+        page.wait_for_timeout(120)
+        print(f"✅ Catégorie sélectionnée (index {donnee['categorie_index']})")
+
+        select_dropdown(page, "Type des données", donnee["type"])
+        select_dropdown(page, "Origine de la donnée", donnee["origine"])
+        select_dropdown(page, "Utilisé(s) pour la finalité du traitement", donnee["utilise"])
+        select_dropdown(page, "Source de données", donnee["source"])
+        if donnee["duree_type"] != "Limitée":
+            select_dropdown(page, "Durée de conservation", donnee["duree_type"])
+        fill_input(page, "Préciser la durée (mois)", donnee["duree"])
+        fill_input(page, "Élément déclencheur", donnee["declencheur"])
+
+        blur_and_clear_overlays(page)
+        save_current_section(page, label="Catégorie de données")
+
+    print("✅ Catégorie de données ajoutée")
+
+def remplir_finalite(page, finalite_fr, finalite_ar):
+    print("➡️ Finalité")
+    menu_item = page.get_by_text("Finalité", exact=True)
+    menu_item.scroll_into_view_if_needed(); menu_item.click(force=True)
+    page.wait_for_timeout(500)
+    page.locator("label:has-text('Finalité (but) du traitement')").locator("xpath=..").locator("textarea").fill(finalite_fr)
+    page.locator("label:has-text('الغاية (الهدف) من المعالجة')").locator("xpath=..").locator("textarea").fill(finalite_ar)
+    save_current_section(page, label="Finalité")
+    print("✅ Section Finalité enregistrée")
+
+def ajouter_sous_traitement(page, st):
+    print(f"➡️ Sous-traitement : {st['denomination_fr']} / {st['denomination_ar']}")
+    _scope(get_active_panel(page), page, "button:has-text('Ajouter')").first.click()
+    page.wait_for_timeout(300)
+    modal = page.locator("div.v-overlay-container").last
+    modal.locator("input").nth(0).fill(st["denomination_fr"])
+    modal.locator("input").nth(1).fill(st["denomination_ar"])
+
+    type_input = modal.locator("label:has-text('Type de traitement') + div input").first
+    type_input.click()
+    page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible")
+    for t in st["types"]:
+        page.locator("div.v-overlay-container .v-list-item-title", has_text=t).first.click()
+        print(f"   ✅ Type : {t}")
+    page.keyboard.press("Escape")
+
+    select_dropdown(page, "Base légale", st["base_legale"], scope=modal)
+    if st.get("sous_traitant"): select_dropdown(page, "Sous traitant", st["sous_traitant"], scope=modal)
+    if st.get("logiciel"): select_dropdown(page, "Logiciel utilisé", st["logiciel"], scope=modal)
+    modal.locator("textarea").last.fill(st["note"])
+
+    blur_and_clear_overlays(page)
+    save_modal_and_wait_close(page, modal, label="Sous-traitement")
+    print("✅ Sous-traitement ajouté")
+
+def ajouter_conservation_donnees(page, conservation):
+    print("➡️ Conservation des données")
+    onglet = page.get_by_text("Conservation des données", exact=True)
+    onglet.scroll_into_view_if_needed(); onglet.click(force=True)
+    page.wait_for_load_state("networkidle"); page.wait_for_timeout(250)
+
+    def fill_by_label(label_text: str, value: str):
+        lab = page.locator(f"label:has-text('{label_text}')").first
+        lab.wait_for(state="visible", timeout=8000)
+        inp = lab.locator("xpath=..").locator("input, textarea").first
+        inp.wait_for(state="visible", timeout=8000)
+        inp.fill(value)
+
+    def ensure_checked(name_substring: str):
+        cb = page.get_by_role("checkbox", name=name_substring, exact=False).first
+        cb.wait_for(state="visible", timeout=8000)
+        try:
+            if not cb.is_checked(): cb.check(force=True)
+        except Exception: cb.click(force=True)
+
+    if "Manuel" in conservation["modes"]: ensure_checked("Manuel"); print("   ☑️ Manuel")
+    if "Informatique" in conservation["modes"]: ensure_checked("Informatique"); print("   ☑️ Informatique")
+
+    if conservation.get("informatique"):
+        fill_by_label("Nom de la base de données", conservation["informatique"]["nom"])
+        fill_by_label("Lieu de stockage de la base de données", conservation["informatique"]["lieu"])
+        print("   ✅ Bloc Informatique ok")
+
+    if conservation.get("manuel"):
+        fill_by_label("Nom du fichier manuel", conservation["manuel"]["nom"])
+        fill_by_label("Lieu de stockage du fichier", conservation["manuel"]["lieu"])
+        print("   ✅ Bloc Manuel ok")
+
+    save_current_section(page, label="Conservation des données")
+
+def modal_select_dropdown(modal, label, value):
+    input_box = modal.locator(f"label:has-text('{label}') + div input[placeholder]").first
+    input_box.click()
+    modal.page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible")
+    modal.page.locator("div.v-overlay-container .v-list-item-title", has_text=value).first.click()
+
+def modal_fill(modal, label, value):
+    modal.locator(f"label:has-text('{label}')").locator("xpath=..").locator("textarea, input").first.fill(str(value))
+
+def ajouter_un_destinataire(page, d):
+    _scope(get_active_panel(page), page, "button:has-text('Ajouter')").first.click()
+    page.wait_for_timeout(250)
+    modal = page.locator("div.v-overlay-container").last
+
+    dest_input = modal.locator("label:has-text('Destinataire') + div input").first
+    dest_input.click()
+    if d.get("destinataire"):
+        dest_input.fill(d["destinataire"]); modal.page.wait_for_timeout(150)
+    modal.page.wait_for_selector("div.v-overlay-container .v-list-item-title", state="visible")
+    modal.page.locator("div.v-overlay-container .v-list-item-title", has_text=d["destinataire"]).first.click()
+
+    if d.get("moyen"): modal_select_dropdown(modal, "Moyen de communication", d["moyen"])
+    if d.get("cadre_legal") is not None: modal_select_dropdown(modal, "Cadre legal", "Oui" if d["cadre_legal"] else "Non")
+    if d.get("objectifs"): modal_fill(modal, "Objectifs", d["objectifs"])
+    if d.get("observation"): modal_fill(modal, "Observation", d["observation"])
+
+    blur_and_clear_overlays(page)
+    save_modal_and_wait_close(page, modal, label="Destinataire")
+
+def ajouter_destinataires(page, items):
+    print("➡️ Destinataires")
+    onglet = page.get_by_text("Les destinataires des données", exact=True)
+    onglet.scroll_into_view_if_needed(); onglet.click(force=True)
+    page.wait_for_timeout(300)
+    for d in items:
+        ajouter_un_destinataire(page, d)
+    save_current_section(page, label="Destinataires")
+    print("✅ Destinataires ok")
+
+# ===== Catégories de personnes =====
+def remplir_categories_personnes(page, items):
+    print("➡️ Catégories de personnes")
+    # libellé historique qui fonctionnait chez toi
+    menu_item = page.locator("text=Catégories de données à caractère personnel").first
+    menu_item.scroll_into_view_if_needed(); menu_item.click(force=True)
+    page.wait_for_timeout(400)
+
+    panel = get_active_panel(page) or page
+    for r in items:
+        # Ouvrir la modale "Ajouter" de cette section
+        _scope(panel, page, "button:has-text('Ajouter')").first.click()
+        page.wait_for_timeout(250)
+
+        modal = page.locator("div.v-overlay-container").last
+        if modal.count() and modal.is_visible():
+            # Remplir dans la modale (nouveau front)
+            select_dropdown(page, "Catégorie des personnes concernées", r["categorie"], scope=modal)
+            if r.get("type_collecte"):
+                if r.get("type_collecte"):
+                    try:
+                        select_dropdown(page, "Type de collecte de données", r["type_collecte"], scope=modal)
+                    except Exception:
+                        print(f"⚠️ Champ 'Type de collecte de données' introuvable pour {r['categorie']}, on continue…")
+
+            if r.get("mode_collecte"):
+                try:
+                    select_dropdown(page, "Mode de collecte", r["mode_collecte"], scope=modal)
+                except Exception:
+                    print(f"⚠️ Champ 'Mode de collecte' introuvable pour {r['categorie']}, on continue…")
+
+                    pass
+            blur_and_clear_overlays(page)
+            save_modal_and_wait_close(page, modal, label=f"Catégorie {r['categorie']}")
+        else:
+            # Fallback ancien comportement (sans modale)
+            select_dropdown(page, "Catégorie des personnes concernées", r["categorie"], scope=panel)
+            if r.get("type_collecte"): select_dropdown(page, "Type de collecte de données", r["type_collecte"], scope=panel)
+            if r.get("mode_collecte"):  select_dropdown(page, "Mode de collecte", r["mode_collecte"], scope=panel)
+
+            # cases à cocher sécurité si elles existent dans ce flux
+            for sec_label, active in r.get("securites", {}).items():
+                if active:
+                    try:
+                        lbl = _scope(panel, page, f"label:has-text('{sec_label}')").first
+                        if lbl.count() and lbl.is_visible(): lbl.click()
+                    except Exception:
+                        pass
+            blur_and_clear_overlays(page)
+            save_current_section(page, panel, label=f"Catégorie {r['categorie']}")
+        page.wait_for_timeout(300)
+
+    print("✅ Catégories de personnes ok")
+
+# ===== wrapper pour la section Catégories de données =====
+def remplir_categories_donnees(page, donnees):
+    onglet_donnees = page.get_by_text("Catégorie des données collectées et traitées", exact=True)
+    onglet_donnees.scroll_into_view_if_needed(); onglet_donnees.click(force=True)
+    page.wait_for_timeout(400)
+    for d in donnees:
+        ajouter_categorie_donnees(page, d)
+    print("✅ Catégories de données ok")
+
+# ================== DROITS DES PERSONNES (identique) ==================
+def fill_pair_ids(page, panel, fr_id: str, fr_val: str, ar_id: str | None, ar_val: str | None):
+    fr_val = fr_val or ""
+    ar_val = ar_val if ar_val is not None else fr_val
+    fr_nodes = _scope(panel, page, f'textarea#{fr_id}, input#{fr_id}')
+    if fr_nodes.count():
+        print(f"   📝 FR -> #{fr_id}")
+        for i in range(fr_nodes.count()):
+            safe_fill_input(fr_nodes.nth(i), fr_val)
+    if ar_id:
+        ar_nodes = _scope(panel, page, f'textarea#{ar_id}, input#{ar_id}')
+        if ar_nodes.count():
+            print(f"   📝 AR -> #{ar_id}")
+            for i in range(ar_nodes.count()):
+                safe_fill_input(ar_nodes.nth(i), ar_val)
+
+def fill_bilingual_same_id(page, panel, base_id: str, fr_val: str, ar_val: str | None):
+    fr_val = fr_val or ""; ar_val = ar_val if ar_val is not None else fr_val
+    nodes = _scope(panel, page, f'textarea#{base_id}, input#{base_id}')
+    cnt = nodes.count()
+    if cnt >= 2:
+        print(f"   📝 FR/AR -> #{base_id} (x{cnt})")
+        safe_fill_input(nodes.nth(0), fr_val)
+        safe_fill_input(nodes.nth(1), ar_val)
+    elif cnt == 1:
+        safe_fill_input(nodes.first, fr_val if fr_val else ar_val)
+
+def click_onglet_vuetify(page, titre: str, expect_prefix: str | None = None):
+    variants = list(dict.fromkeys([titre, titre.replace("'", "’"), titre.replace("’", "'")]))
+    tablist = page.locator('[role="tablist"]').first
+    if tablist.count():
+        for _ in range(10):
+            for cand in variants:
+                tab = tablist.get_by_role("tab", name=cand, exact=False).first
+                if tab.count():
+                    tab.scroll_into_view_if_needed(); tab.click(force=True)
+                    page.wait_for_timeout(250)
+                    if expect_prefix:
+                        active = get_active_panel(page) or page
+                        sel = active.locator(f'[id^="{expect_prefix}_"]')
+                        if sel.count(): return
+                    return
+            nxt = tablist.locator('.v-slide-group__next')
+            if nxt.count() and nxt.is_enabled():
+                nxt.click(); page.wait_for_timeout(150)
+            else:
+                break
+    for cand in variants:
+        t = page.get_by_role("tab", name=cand, exact=False).first
+        if t.count():
+            t.click(force=True); page.wait_for_timeout(250); return
+    page.get_by_text(titre.replace("’","'"), exact=False).first.click(); page.wait_for_timeout(250)
+
+def remplir_droits_personnes(page, dp):
+    print("➡️ Droits des personnes")
+    menu = page.get_by_text("Droit des personnes", exact=False)
+    menu.scroll_into_view_if_needed(); menu.click(force=True)
+    page.wait_for_load_state("networkidle"); page.wait_for_timeout(300)
+
+    if dp.get("information"):
+        click_onglet_vuetify(page, "Droit à l'information", expect_prefix="information_right")
+        panel = get_active_panel(page)
+        info = dp["information"]; svc = info.get("service", {})
+        fill_pair_ids(page, panel, "information_right_how", info.get("comment",""), "information_right_how_ar", info.get("comment_ar"))
+        fill_pair_ids(page, panel, "information_right_mesures_prise", info.get("mesures",""), "information_right_mesures_prise_ar", info.get("mesures_ar"))
+        fill_pair_ids(page, panel, "information_right_service_name", svc.get("nom",""), "information_right_service_name_ar", svc.get("nom_ar"))
+        mob = _scope(panel, page, "#information_right_phone")
+        if mob and mob.count(): safe_fill_input(mob.first, _clean_phone(svc.get("mobile","")))
+        email = _scope(panel, page, "#information_right_email")
+        if email and email.count(): safe_fill_input(email.first, svc.get("email",""))
+        addr_fr = _scope(panel, page, "#information_right_address")
+        if addr_fr and addr_fr.count(): safe_fill_input(addr_fr.first, svc.get("adresse",""))
+        addr_ar = _scope(panel, page, "#information_right_address_ar")
+        if addr_ar and addr_ar.count(): safe_fill_input(addr_ar.first, svc.get("adresse_ar", svc.get("adresse","")))
+        save_current_section(page, panel, label="Droit à l'information")
+        print("✅ Onglet 'Droit à l'information' ok")
+
+    def traiter_autre_onglet(titre, pref, data):
+        click_onglet_vuetify(page, titre, expect_prefix=pref)
+        panel = get_active_panel(page); svc = data.get("service", {})
+        fill_pair_ids(page, panel, f"{pref}_how", data.get("comment",""), f"{pref}_how_ar", data.get("comment_ar"))
+        fill_pair_ids(page, panel, f"{pref}_mesures_prise", data.get("mesures",""), f"{pref}_mesures_prise_ar", data.get("mesures_ar"))
+        fill_pair_ids(page, panel, f"{pref}_service_name", svc.get("nom",""), f"{pref}_service_name_ar", svc.get("nom_ar"))
+        mob = _scope(panel, page, f"#{pref}_phone")
+        if mob and mob.count(): safe_fill_input(mob.first, _clean_phone(svc.get("mobile","")))
+        email = _scope(panel, page, f"#{pref}_email")
+        if email and email.count(): safe_fill_input(email.first, svc.get("email",""))
+        addr_fr = _scope(panel, page, f"#{pref}_address")
+        if addr_fr and addr_fr.count(): safe_fill_input(addr_fr.first, svc.get("adresse",""))
+        addr_ar = _scope(panel, page, f"#{pref}_address_ar")
+        if addr_ar and addr_ar.count(): safe_fill_input(addr_ar.first, svc.get("adresse_ar", svc.get("adresse","")))
+        save_current_section(page, panel, label=titre)
+        print(f"✅ Onglet '{titre}' ok")
+
+    if dp.get("acces"):         traiter_autre_onglet("Droit d'accès", "access_right", dp["acces"])
+    if dp.get("rectification"): traiter_autre_onglet("Droit à la rectification", "rectification_right", dp["rectification"])
+    if dp.get("opposition"):    traiter_autre_onglet("Droit d'opposition", "opposition_right", dp["opposition"])
+    print("✅ Droits des personnes complétés")
+
+def ajouter_taches_initiales(page, taches: List[Dict[str,str]]):
+    print("➡️ Tâches initiales")
+    menu = page.get_by_text("Tâches initiales", exact=False)
+    menu.scroll_into_view_if_needed(); menu.click(force=True)
+    page.wait_for_load_state("networkidle"); page.wait_for_timeout(250)
+
+    for t in taches:
+        _scope(get_active_panel(page), page, "button:has-text('Ajouter')").first.click()
+        page.wait_for_timeout(250)
+        modal = page.locator("div.v-overlay-container").last
+        fields = modal.locator("input, textarea").filter(has_not=modal.locator('[aria-hidden="true"]'))
+        fields.nth(0).fill(t.get("fr",""))
+        fields.nth(1).fill(t.get("ar", t.get("fr","")))
+        blur_and_clear_overlays(page)
+        save_modal_and_wait_close(page, modal, label="Tâche")
+        print(f"   ➕ Tâche ajoutée: FR='{t.get('fr','')}' / AR='{t.get('ar',t.get('fr',''))}'")
+
+    save_current_section(page, label="Tâches initiales")
+    print("✅ Tâches initiales enregistrées")
+
+# ================== SCRIPT PRINCIPAL ==================
+with sync_playwright() as p:
+    cfg = load_config(EXCEL_PATH)
+
+    browser = p.chromium.launch(headless=False)
+    page = browser.new_page()
+
+    # --- Connexion ---
+    page.goto("https://admin.dp-manager.com/login")
+    page.fill("input[placeholder=\"Nom d'utilisateur\"]", "admin")
+    page.fill("input[type='password']", "Chtitha@58206670")
+    page.click("button:has-text(\"S'authentifier\")")
+    page.wait_for_url("**/tenants", timeout=20000)
+    print("✅ Connexion réussie (page tenants)")
+
+    # --- Création traitement ---
+    page.goto("https://admin.dp-manager.com/registers/trt-registers/create")
+    page.wait_for_url("**/registers/trt-registers/create", timeout=20000)
+    print("✅ Page création ouverte")
+
+    page.fill("#code", cfg["traitement"]["code"])
+    page.fill("#name", cfg["traitement"]["name_fr"])
+    page.fill("#name_ar", cfg["traitement"]["name_ar"])
+
+    page.click("#status"); page.click(f"text={cfg['traitement']['status']}")
+    page.click("label:has-text(\"Type de traitement\") + div")
+    if cfg["traitement"]["type_manuel"]:
+        page.locator("div.v-overlay-container div.v-list-item-title", has_text="Manuel").first.click()
+    if cfg["traitement"]["type_automatique"]:
+        page.locator("div.v-overlay-container div.v-list-item-title", has_text="Automatique").first.click()
+    page.click("body")
+
+    page.wait_for_selector("button[type='submit']:not([disabled])", timeout=5000)
+    page.locator("button[type='submit']").click()
+
+    # --- Fondement légal ---
+    page.click("text=Fondement légal d'un traitement")
+    page.fill("textarea", cfg["fondement"]["texte_fr"])
+    page.locator("textarea").nth(1).fill(cfg["fondement"]["texte_ar"])
+
+    if cfg["fondement"].get("base_consentement"):
+        page.click("label:has-text('Le consentement exprès de la personne concernée')")
+    if cfg["fondement"].get("base_obligation"):
+        page.click("label:has-text(\"Le respect d'une obligation légale.\")")
+    if cfg["fondement"].get("base_vie"):
+        page.click("label:has-text(\"La sauvegarde de la vie de la personne.\")")
+    if cfg["fondement"].get("base_vitaux"):
+        page.click("label:has-text(\"La sauvegarde d'intérêts vitaux de la personne.\")")
+    if cfg["fondement"].get("base_contrat"):
+        page.click("label:has-text(\"L'exécution d'un contrat ou précontrat à la demande de la personne\")")
+    if cfg["fondement"].get("base_public"):
+        page.click("label:has-text(\"L'exécution d'une mission d'intérêt public.\")")
+    if cfg["fondement"].get("base_interet_legitime"):
+        page.click("label:has-text(\"La réalisation d'un intérêt légitime poursuivi par le responsable du traitement\")")
+
+    tas = page.locator("textarea")
+    if tas.count() >= 3:
+        tas.nth(2).fill(cfg["fondement"]["note"])
+
+    save_current_section(page, label="Fondement légal")
+    print("✅ Section Fondement légal enregistrée")
+
+    # --- Catégories de personnes (gestion modale si présente) ---
+    remplir_categories_personnes(page, cfg["categories_personnes"])
+
+    # --- Catégories de données (gestion modale si présente) ---
+    remplir_categories_donnees(page, cfg["categories_donnees"])
+
+    # --- Finalité ---
+    remplir_finalite(page, cfg["finalite"]["fr"], cfg["finalite"]["ar"])
+
+    # --- Sous-traitements ---
+    onglet_sous_traitements = page.get_by_text("Sous-traitements", exact=True)
+    onglet_sous_traitements.scroll_into_view_if_needed(); onglet_sous_traitements.click(force=True)
+    page.wait_for_timeout(500)
+    for st in cfg["sous_traitements"]:
+        ajouter_sous_traitement(page, st)
+    print("✅ Sous-traitements ok")
+
+    # --- Conservation des données ---
+    ajouter_conservation_donnees(page, cfg["conservation"])
+
+    # --- Destinataires ---
+    ajouter_destinataires(page, cfg["destinataires"])
+
+    # --- Consentement (inline léger) ---
+    page.get_by_text("Consentement", exact=True).scroll_into_view_if_needed()
+    page.get_by_text("Consentement", exact=True).click()
+    page.wait_for_timeout(300)
+    select_dropdown(page, "Consentement des personnes concernées : Existe ?", "Oui" if cfg["consentement"].get("existe", True) else "Non")
+    ta_fr = page.locator("label:has-text('Indiquer la méthode de consentement')").locator("xpath=..").locator("textarea").first
+    if not ta_fr.count(): ta_fr = page.locator("textarea").first
+    ta_fr.fill(cfg["consentement"].get("methode_fr",""))
+    ta_ar = page.locator("label:has-text('حدد كيفية أخذ الموافقة الصريحة')").locator("xpath=..").locator("textarea").first
+    if not ta_ar.count() and page.locator("textarea").count() > 1:
+        ta_ar = page.locator("textarea").nth(1)
+    if ta_ar: ta_ar.fill(cfg["consentement"].get("methode_ar",""))
+    save_current_section(page, label="Consentement")
+
+    # --- Droits des personnes ---
+    remplir_droits_personnes(page, {
+        "information": cfg["droits"].get("information"),
+        "acces": cfg["droits"].get("acces"),
+        "rectification": cfg["droits"].get("rectification"),
+        "opposition": cfg["droits"].get("opposition"),
+    })
+
+    # --- Tâches initiales ---
+    ajouter_taches_initiales(page, cfg["taches"])
+
+    print("🎉 Script terminé.")
